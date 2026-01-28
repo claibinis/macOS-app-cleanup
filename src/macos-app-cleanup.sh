@@ -14,10 +14,265 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
+# Baseline configuration
+BASELINE_DIR="$HOME/.config/macos-app-cleanup/baselines"
+BASELINE_FILE=""
+USE_BASELINE=0
+
+# Get macOS version (e.g., "15.2" for Sequoia, "26.2" for Tahoe)
+get_macos_version() {
+    sw_vers -productVersion | cut -d'.' -f1,2
+}
+
+# Get macOS marketing name
+get_macos_name() {
+    local version=$(sw_vers -productVersion | cut -d'.' -f1)
+    case "$version" in
+        26) echo "Tahoe" ;;
+        15) echo "Sequoia" ;;
+        14) echo "Sonoma" ;;
+        13) echo "Ventura" ;;
+        12) echo "Monterey" ;;
+        11) echo "Big Sur" ;;
+        10) echo "Catalina/Mojave/High Sierra" ;;
+        *) echo "macOS $version" ;;
+    esac
+}
+
+# Show help
+show_help() {
+    echo "App Remnants Cleaner for macOS"
+    echo ""
+    echo "Usage: $(basename "$0") [OPTIONS]"
+    echo ""
+    echo "Options:"
+    echo "  -h, --help              Show this help message"
+    echo "  -b, --create-baseline   Create a baseline of current system state"
+    echo "  -u, --use-baseline [V]  Use baseline for comparison (V=version, e.g., 26.2)"
+    echo "                          If version not specified, uses current macOS version"
+    echo "  -l, --list-baselines    List available baselines"
+    echo ""
+    echo "Baseline Feature:"
+    echo "  Create a baseline on a freshly installed system to capture the 'clean' state."
+    echo "  Future runs with --use-baseline will only show items added after the baseline,"
+    echo "  making it easier to identify bloat from installed applications."
+    echo ""
+    echo "Examples:"
+    echo "  $(basename "$0")                      # Normal scan"
+    echo "  $(basename "$0") --create-baseline    # Create baseline for current macOS"
+    echo "  $(basename "$0") --use-baseline       # Scan using baseline for current macOS"
+    echo "  $(basename "$0") --use-baseline 26.2  # Scan using specific baseline"
+    echo ""
+    exit 0
+}
+
+# Create baseline of current system state
+create_baseline() {
+    local version=$(get_macos_version)
+    local name=$(get_macos_name)
+    local baseline_file="$BASELINE_DIR/baseline-${version}.txt"
+
+    # Create baseline directory if needed
+    mkdir -p "$BASELINE_DIR"
+
+    echo -e "${BLUE}========================================${NC}"
+    echo -e "${BLUE}   Creating System Baseline${NC}"
+    echo -e "${BLUE}========================================${NC}"
+    echo ""
+    echo -e "${BLUE}macOS Version:${NC} $version ($name)"
+    echo -e "${BLUE}Baseline File:${NC} $baseline_file"
+    echo ""
+
+    if [ -f "$baseline_file" ]; then
+        echo -e "${YELLOW}WARNING:${NC} A baseline for version $version already exists."
+        read -p "Overwrite existing baseline? (y/n): " overwrite
+        if [[ ! "$overwrite" =~ ^[Yy]$ ]]; then
+            echo -e "${BLUE}Cancelled - existing baseline preserved${NC}"
+            exit 0
+        fi
+        echo ""
+    fi
+
+    echo -e "${BLUE}Scanning system directories...${NC}"
+    echo ""
+
+    # Write header
+    echo "# macOS App Cleanup Baseline" > "$baseline_file"
+    echo "# macOS Version: $version ($name)" >> "$baseline_file"
+    echo "# Created: $(date)" >> "$baseline_file"
+    echo "# This file lists directories present on a clean system." >> "$baseline_file"
+    echo "" >> "$baseline_file"
+
+    local total_items=0
+
+    # Scan each location and record all directories
+    for location in \
+        "$HOME/Library/Application Support" \
+        "$HOME/Library/Caches" \
+        "$HOME/Library/Preferences" \
+        "$HOME/Library/Saved Application State" \
+        "$HOME/Library/Logs" \
+        "$HOME/Library/WebKit" \
+        "$HOME/Library/Cookies" \
+        "$HOME/Library/HTTPStorages" \
+        "$HOME/Library/Group Containers" \
+        "$HOME/Library/Containers"
+    do
+        if [ ! -d "$location" ]; then
+            continue
+        fi
+
+        echo -e "${BLUE}Scanning:${NC} $location"
+
+        # Record each subdirectory
+        while IFS= read -r item; do
+            item_name=$(basename "$item")
+            echo "$location|$item_name" >> "$baseline_file"
+            total_items=$((total_items + 1))
+        done < <(find "$location" -maxdepth 1 -mindepth 1 -type d 2>/dev/null)
+    done
+
+    echo ""
+    echo -e "${GREEN}========================================${NC}"
+    echo -e "${GREEN}   Baseline Created Successfully${NC}"
+    echo -e "${GREEN}========================================${NC}"
+    echo ""
+    echo -e "${GREEN}Recorded $total_items directories${NC}"
+    echo -e "${BLUE}File:${NC} $baseline_file"
+    echo ""
+    echo -e "${YELLOW}Tip:${NC} Run future scans with --use-baseline to compare against this state"
+    echo ""
+    exit 0
+}
+
+# List available baselines
+list_baselines() {
+    echo -e "${BLUE}========================================${NC}"
+    echo -e "${BLUE}   Available Baselines${NC}"
+    echo -e "${BLUE}========================================${NC}"
+    echo ""
+
+    if [ ! -d "$BASELINE_DIR" ]; then
+        echo -e "${YELLOW}No baselines found.${NC}"
+        echo ""
+        echo "Create one with: $(basename "$0") --create-baseline"
+        exit 0
+    fi
+
+    local count=0
+    for baseline in "$BASELINE_DIR"/baseline-*.txt; do
+        if [ -f "$baseline" ]; then
+            local filename=$(basename "$baseline")
+            local version=$(echo "$filename" | sed 's/baseline-//' | sed 's/\.txt//')
+            local created=$(grep "^# Created:" "$baseline" 2>/dev/null | sed 's/# Created: //' || echo "Unknown")
+            local items=$(grep -v "^#" "$baseline" | grep -v "^$" | wc -l | tr -d ' ')
+
+            echo -e "${GREEN}Version $version${NC}"
+            echo -e "  Created: $created"
+            echo -e "  Items: $items directories"
+            echo ""
+            count=$((count + 1))
+        fi
+    done
+
+    if [ $count -eq 0 ]; then
+        echo -e "${YELLOW}No baselines found.${NC}"
+        echo ""
+        echo "Create one with: $(basename "$0") --create-baseline"
+    else
+        echo -e "${BLUE}Current macOS version:${NC} $(get_macos_version) ($(get_macos_name))"
+    fi
+
+    exit 0
+}
+
+# Load baseline into lookup string
+load_baseline() {
+    local version="$1"
+    local baseline_file="$BASELINE_DIR/baseline-${version}.txt"
+
+    if [ ! -f "$baseline_file" ]; then
+        echo -e "${RED}ERROR:${NC} No baseline found for version $version"
+        echo ""
+        echo "Available baselines:"
+        ls "$BASELINE_DIR"/baseline-*.txt 2>/dev/null | while read f; do
+            echo "  - $(basename "$f" | sed 's/baseline-//' | sed 's/\.txt//')"
+        done
+        echo ""
+        echo "Create one with: $(basename "$0") --create-baseline"
+        exit 1
+    fi
+
+    BASELINE_FILE="$baseline_file"
+    USE_BASELINE=1
+
+    # Load baseline into lookup string (location|name format)
+    BASELINE_LOOKUP=""
+    while IFS= read -r line; do
+        # Skip comments and empty lines
+        if [[ "$line" =~ ^# ]] || [ -z "$line" ]; then
+            continue
+        fi
+        BASELINE_LOOKUP="${BASELINE_LOOKUP}${line}
+"
+    done < "$baseline_file"
+}
+
+# Check if item is in baseline
+is_in_baseline() {
+    local location="$1"
+    local item_name="$2"
+
+    if [ $USE_BASELINE -eq 0 ]; then
+        return 1
+    fi
+
+    echo "$BASELINE_LOOKUP" | grep -Fxq "${location}|${item_name}"
+    return $?
+}
+
+# Parse command-line arguments
+BASELINE_VERSION=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -h|--help)
+            show_help
+            ;;
+        -b|--create-baseline)
+            create_baseline
+            ;;
+        -l|--list-baselines)
+            list_baselines
+            ;;
+        -u|--use-baseline)
+            if [ -n "$2" ] && [[ ! "$2" =~ ^- ]]; then
+                BASELINE_VERSION="$2"
+                shift
+            else
+                BASELINE_VERSION=$(get_macos_version)
+            fi
+            load_baseline "$BASELINE_VERSION"
+            ;;
+        *)
+            echo -e "${RED}Unknown option:${NC} $1"
+            echo "Use --help for usage information"
+            exit 1
+            ;;
+    esac
+    shift
+done
+
 echo -e "${BLUE}========================================${NC}"
 echo -e "${BLUE}   App Remnants Cleaner for macOS${NC}"
 echo -e "${BLUE}========================================${NC}"
 echo ""
+
+# Show baseline status if using one
+if [ $USE_BASELINE -eq 1 ]; then
+    echo -e "${GREEN}Using baseline:${NC} v$BASELINE_VERSION"
+    echo -e "${BLUE}Only showing items added after baseline${NC}"
+    echo ""
+fi
 
 # Function to check if directory exists and has files
 check_location() {
@@ -237,6 +492,11 @@ for location in "${LOCATIONS[@]}"; do
 
         # Skip macOS system components
         if is_macos_system "$item_name"; then
+            continue
+        fi
+
+        # Skip items present in baseline (if using baseline)
+        if is_in_baseline "$location" "$item_name"; then
             continue
         fi
 
